@@ -74,6 +74,20 @@ impl A11yNode {
 
         fold_stack.pop().ok_or("No root node built".into())
     }
+
+    fn node_count(&self) -> u32 {
+        let mut count = 0;
+        let mut stack = Vec::new();
+
+        stack.push(self.clone());
+
+        while let Some(node) = stack.pop() {
+            count += 1;
+            stack.extend(node.children);
+        }
+
+        count
+    }
 }
 
 async fn get_registry_accessible<'a>(conn: &Connection) -> Result<AccessibleProxy<'a>> {
@@ -249,7 +263,7 @@ async fn main() -> Result<()> {
 
     let now = std::time::Instant::now();
     let acc_proxy = get_root_accessible(bus_name.clone(), conn).await?;
-    let _ = A11yNode::from_accessible_proxy_iterative(acc_proxy).await?;
+    let bus_tree = A11yNode::from_accessible_proxy_iterative(acc_proxy).await?;
     let bus_duration = now.elapsed();
 
     // Get private bus socket address
@@ -275,8 +289,21 @@ async fn main() -> Result<()> {
 
     let now = std::time::Instant::now();
     let acc_proxy = get_root_accessible(bus_name.clone(), &conn2).await?;
-    let _ = A11yNode::from_accessible_proxy_iterative(acc_proxy).await?;
+    let p2p_tree = A11yNode::from_accessible_proxy_iterative(acc_proxy).await?;
     let p2p_duration = now.elapsed();
+
+    println!("The tree counts should be the same.");
+    println!(
+        "{:<70} {:>15.2?}",
+        "Bus tree node count:",
+        bus_tree.node_count()
+    );
+    println!(
+        "{:<70} {:>15.2?}",
+        "P2P tree node count:",
+        p2p_tree.node_count()
+    );
+    println!();
 
     println!("{:<70} {:>15.2?}", "Bus connection time:", bus_duration);
     println!("{:<70} {:>15.2?}", "P2P connection time:", p2p_duration);
