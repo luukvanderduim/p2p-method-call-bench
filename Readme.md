@@ -14,18 +14,21 @@ cargo run --release -- firefox
 ## Results
 
 ```console
-   Compiling bench-p2p-method-call v0.1.0 (/home/luuk/code/bench-p2p-method-call)
-    Finished `release` profile [optimized] target(s) in 2.48s
-     Running `target/release/bench-p2p-method-call firefox`
-Sought firefox, found application: Firefox
+    Finished `release` profile [optimized] target(s) in 0.03s
+     Running `target/release/bench-p2p-method-call fox`
+Sought fox, partially matches application: Firefox
 Would you like to add this application? (Y/n)
 
-Bus connection time:                                                             1.08s
-P2P connection time:                                                          534.75ms
-P2P speedup:                                                                      2.02
+The tree counts should be the same.
+Bus tree node count:                                                             20217
+P2P tree node count:                                                             20217
+
+Bus connection time:                                                             3.18s
+P2P connection time:                                                             1.63s
+P2P speedup:                                                                      1.95
 ```
 
 ## Conclusion
 
-P2P is about twice as fast performing method calls.
+P2P is often around twice as fast performing method calls.
 Quite the difference.

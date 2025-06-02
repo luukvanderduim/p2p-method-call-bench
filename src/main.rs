@@ -14,8 +14,9 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 type ArgResult<T> = std::result::Result<T, String>;
 
 const REGISTRY_DEST: &str = "org.a11y.atspi.Registry";
-const ACCESSIBLE_ROOT: &str = "/org/a11y/atspi/accessible/root";
+const ACCESSIBLE_ROOT_PATH: &str = "/org/a11y/atspi/accessible/root";
 const ACCESSIBLE_INTERFACE: &str = "org.a11y.atspi.Accessible";
+const APPLICATION_INTERFACE: &str = "org.a11y.atspi.Application";
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 struct A11yNode {
@@ -26,6 +27,7 @@ struct A11yNode {
 impl A11yNode {
     async fn from_accessible_proxy_iterative(ap: AccessibleProxy<'_>) -> Result<A11yNode> {
         let connection = ap.inner().connection().clone();
+
         // Contains the processed `A11yNode`'s.
         let mut nodes: Vec<A11yNode> = Vec::new();
 
@@ -34,7 +36,15 @@ impl A11yNode {
 
         // If the stack has an `AccessibleProxy`, we take the last.
         while let Some(ap) = stack.pop() {
-            let child_objects = ap.get_children().await?;
+            let Ok(child_objects) = ap.get_children().await else {
+                eprintln!(
+                    "warn: {} on {} could not get children",
+                    ap.inner().path(),
+                    ap.inner().destination()
+                );
+                continue;
+            };
+
             let mut children_proxies = try_join_all(
                 child_objects
                     .into_iter()
@@ -93,7 +103,7 @@ impl A11yNode {
 async fn get_registry_accessible<'a>(conn: &Connection) -> Result<AccessibleProxy<'a>> {
     let registry = AccessibleProxy::builder(conn)
         .destination(REGISTRY_DEST)?
-        .path(ACCESSIBLE_ROOT)?
+        .path(ACCESSIBLE_ROOT_PATH)?
         .interface(ACCESSIBLE_INTERFACE)?
         .cache_properties(CacheProperties::No)
         .build()
@@ -108,7 +118,7 @@ async fn get_root_accessible<'c>(
 ) -> Result<AccessibleProxy<'c>> {
     let root_accessible = AccessibleProxy::builder(conn)
         .destination(bus_name)?
-        .path(ACCESSIBLE_ROOT)?
+        .path(ACCESSIBLE_ROOT_PATH)?
         .interface(ACCESSIBLE_INTERFACE)?
         .cache_properties(CacheProperties::No)
         .build()
@@ -268,14 +278,21 @@ async fn main() -> Result<()> {
 
     // Get private bus socket address
     // busctl call --address='unix:path=/run/user/1000/at-spi/bus\_0' ':1.124' '/org/a11y/atspi/accessible/root' 'org.a11y.atspi.Application' 'GetApplicationBusAddress'
-    let path = "/org/a11y/atspi/accessible/root";
-    let method = "GetApplicationBusAddress";
-    let iface = "org.a11y.atspi.Application";
-    let socket: Message = conn
-        .call_method(Some(bus_name.clone()), path, Some(iface), method, &[""])
+    let msg: Message = conn
+        .call_method(
+            Some(bus_name.clone()),
+            ACCESSIBLE_ROOT_PATH,
+            Some(APPLICATION_INTERFACE),
+            "GetApplicationBusAddress",
+            &[""],
+        )
         .await?;
-    let socket: String = socket.body().deserialize()?;
-    let socket = socket.strip_prefix("unix:path=").unwrap_or(&socket);
+
+    let socket: String = msg.body().deserialize()?;
+    let socket = socket
+        .strip_prefix("unix:path=")
+        .map(|s| s.to_string())
+        .unwrap_or(socket);
 
     let unix_stream = tokio::net::UnixStream::connect(socket.trim())
         .await
