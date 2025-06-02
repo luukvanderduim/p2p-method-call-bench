@@ -1,0 +1,16 @@
+[package]
+name = "bench-p2p-method-call"
+version = "0.1.0"
+edition = "2024"
+
+
+[dependencies]
+futures = { version = "0.3.31" }
+atspi = { version = "0.26.3", default-features = false, features = [
+    "proxies-tokio",
+    "tokio",
+    "zbus",
+] }
+tokio = { version = "1.45.1", features = ["full"] }
+argh = "0.1.13"
+zbus = { version = "5.7.1", features = ["p2p", "tokio"] }
