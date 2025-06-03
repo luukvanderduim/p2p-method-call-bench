@@ -11,7 +11,6 @@ use std::vec;
 use zbus::{Connection, Message, names::BusName};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
-type ArgResult<T> = std::result::Result<T, String>;
 
 const REGISTRY_DEST: &str = "org.a11y.atspi.Registry";
 const ACCESSIBLE_ROOT_PATH: &str = "/org/a11y/atspi/accessible/root";
@@ -137,12 +136,12 @@ struct AccessibleBusName {
 }
 
 /// Parse the bus name from the command line argument
-fn parse_bus_name(name: String, conn: &Connection) -> ArgResult<Vec<(String, BusName<'static>)>> {
+fn parse_bus_name(name: String, conn: &Connection) -> Result<Vec<(String, BusName<'static>)>> {
     // If the name is empty, use the default bus name
     if name.is_empty() {
         let bus_name = match BusName::try_from(REGISTRY_DEST) {
             Ok(name) => name.to_owned(),
-            Err(e) => return Err(format!("Invalid bus name: {REGISTRY_DEST} ({e})")),
+            Err(e) => return Err(format!("Invalid bus name: {REGISTRY_DEST} ({e})").into()),
         };
 
         return Ok(vec![(REGISTRY_DEST.to_string(), bus_name)]);
@@ -157,7 +156,7 @@ fn parse_bus_name(name: String, conn: &Connection) -> ArgResult<Vec<(String, Bus
     }
 }
 
-fn get_user_yn_response(question: &str) -> ArgResult<bool> {
+fn get_user_yn_response(question: &str) -> Result<bool> {
     println!("{question} (Y/n)");
     let mut answer = String::new();
     std::io::stdin()
@@ -169,7 +168,7 @@ fn get_user_yn_response(question: &str) -> ArgResult<bool> {
     } else if answer == "n" || answer == "no" {
         Ok(false)
     } else {
-        Err(format!("Invalid answer: {answer}"))
+        Err(format!("Invalid response: {answer}").into())
     }
 }
 
@@ -177,7 +176,7 @@ fn get_user_yn_response(question: &str) -> ArgResult<bool> {
 fn from_app_name(
     sought_after: String,
     conn: &Connection,
-) -> ArgResult<Vec<(String, BusName<'static>)>> {
+) -> Result<Vec<(String, BusName<'static>)>> {
     let registry_accessible = block_on(get_registry_accessible(conn)).map_err(|e| e.to_string())?;
     let mut apps = block_on(registry_accessible.get_children()).map_err(|e| e.to_string())?;
     // get apps in reverse order - most recently entered apps first
@@ -245,7 +244,7 @@ fn from_app_name(
     }
 
     if matching_apps.is_empty() {
-        return Err(format!("No application found with name: {sought_after}"));
+        return Err(format!("No application found with name: {sought_after}").into());
     }
     Ok(matching_apps)
 }
