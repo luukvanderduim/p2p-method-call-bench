@@ -309,20 +309,34 @@ async fn main() -> Result<()> {
     let p2p_duration = now.elapsed();
 
     println!("The tree counts should be the same.");
+    let bus_tree_node_count = bus_tree.node_count();
+    let p2p_tree_node_count = p2p_tree.node_count();
     println!(
         "{:<70} {:>15.2?}",
-        "Bus tree node count:",
-        bus_tree.node_count()
+        "Bus tree node count:", bus_tree_node_count
     );
     println!(
         "{:<70} {:>15.2?}",
-        "P2P tree node count:",
-        p2p_tree.node_count()
+        "P2P tree node count:", p2p_tree_node_count
     );
     println!();
 
     println!("{:<70} {:>15.2?}", "Bus connection time:", bus_duration);
+    // Average time per node in the bus tree
+    println!(
+        "{:<70} {:>15.2?}",
+        "Avg per node (Bus):",
+        per_node(bus_duration, bus_tree_node_count)
+    );
+    println!();
     println!("{:<70} {:>15.2?}", "P2P connection time:", p2p_duration);
+    // Average time per node in the P2P tree
+    println!(
+        "{:<70} {:>15.2?}",
+        "Avg per node (P2P):",
+        per_node(p2p_duration, p2p_tree_node_count)
+    );
+    println!();
     println!(
         "{:<70} {:>15.2?}",
         "P2P speedup:",
@@ -330,4 +344,10 @@ async fn main() -> Result<()> {
     );
 
     Ok(())
+}
+
+fn per_node(dur: std::time::Duration, count: u32) -> std::time::Duration {
+    let mut dur = dur.as_nanos();
+    dur /= count as u128;
+    std::time::Duration::from_nanos(dur as u64)
 }
