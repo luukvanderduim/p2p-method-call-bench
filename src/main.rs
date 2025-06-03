@@ -2,7 +2,10 @@ use argh::FromArgs;
 use atspi::{
     Role,
     connection::set_session_accessibility,
-    proxy::accessible::{AccessibleProxy, ObjectRefExt},
+    proxy::{
+        accessible::{AccessibleProxy, ObjectRefExt},
+        application::ApplicationProxy,
+    },
     zbus::proxy::CacheProperties,
 };
 use futures::executor::block_on;
@@ -269,6 +272,22 @@ async fn main() -> Result<()> {
     let app = applications.first().unwrap();
 
     let (_name, bus_name) = app;
+
+    // Getting toolkit provider
+    let app_proxy = ApplicationProxy::builder(conn)
+        .destination(bus_name.clone())?
+        .path(ACCESSIBLE_ROOT_PATH)?
+        .cache_properties(CacheProperties::No)
+        .build()
+        .await?;
+
+    let toolkit = app_proxy.toolkit_name().await?;
+    let toolkit_version = app_proxy.version().await?;
+
+    // Print these two really really pretty
+    println!("{:<70} {:>15}", "Toolkit:", toolkit);
+    println!("{:<70} {:>15}", "Toolkit version:", toolkit_version);
+    println!();
 
     let now = std::time::Instant::now();
     let acc_proxy = get_root_accessible(bus_name.clone(), conn).await?;

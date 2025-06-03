@@ -14,23 +14,23 @@ cargo run --release -- firefox
 ## Results
 
 ```console
-   Compiling bench-p2p-method-call v0.1.0 (/home/luuk/code/bench-p2p-method-call)
-    Finished `release` profile [optimized] target(s) in 2.45s
-     Running `target/release/bench-p2p-method-call fox`
-Sought fox, partially matches application: Firefox
-Would you like to add this application? (Y/n)
+luuk@ ~/c/bench-p2p-method-call (main)> cargo rr -- gedit
+    Finished `release` profile [optimized] target(s) in 0.03s
+     Running `target/release/bench-p2p-method-call gedit`
+Toolkit:                                                                           gtk
+Toolkit version:                                                               3.24.49
 
 The tree counts should be the same.
-Bus tree node count:                                                              1161
-P2P tree node count:                                                              1161
+Bus tree node count:                                                               500
+P2P tree node count:                                                               500
 
-Bus connection time:                                                          178.55ms
-Avg per node (Bus):                                                           153.79µs
+Bus connection time:                                                          109.62ms
+Avg per node (Bus):                                                           219.23µs
 
-P2P connection time:                                                           93.82ms
-Avg per node (P2P):                                                            80.81µs
+P2P connection time:                                                           42.54ms
+Avg per node (P2P):                                                            85.08µs
 
-P2P speedup:                                                                      1.90
+P2P speedup:                                                                      2.58
 ```
 
 ## Conclusion
