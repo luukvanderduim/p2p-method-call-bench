@@ -6,9 +6,9 @@ edition = "2024"
 
 [dependencies]
 futures = { version = "0.3.31" }
-atspi = { version = "0.27.0", default-features = false, features = [
-    "proxies",
+atspi = { git = "https://github.com/odilia-app/atspi.git", branch = "p2p", version = "0.27.0", default-features = false, features = [
     "connection",
+    "proxies",
     "tokio",
     "zbus",
 ] }

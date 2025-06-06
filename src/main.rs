@@ -5,20 +5,20 @@ use atspi::{
     proxy::{
         accessible::{AccessibleProxy, ObjectRefExt},
         application::ApplicationProxy,
+        proxy_ext::ProxyExt,
     },
     zbus::proxy::CacheProperties,
 };
 use futures::executor::block_on;
 use futures::future::try_join_all;
 use std::vec;
-use zbus::{Connection, Message, names::BusName};
+use zbus::{Connection, names::BusName};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 const REGISTRY_DEST: &str = "org.a11y.atspi.Registry";
 const ACCESSIBLE_ROOT_PATH: &str = "/org/a11y/atspi/accessible/root";
 const ACCESSIBLE_INTERFACE: &str = "org.a11y.atspi.Accessible";
-const APPLICATION_INTERFACE: &str = "org.a11y.atspi.Application";
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 struct A11yNode {
@@ -261,17 +261,8 @@ async fn main() -> Result<()> {
 
     let args: AccessibleBusName = argh::from_env();
 
-    // Sometimes applications have multiple connections
-    // represented by multiple bus names.
     let applications = parse_bus_name(args.bus_name.clone(), conn)?;
-
-    if applications.is_empty() {
-        return Err("No application found".into());
-    }
-
-    let app = applications.first().unwrap();
-
-    let (_name, bus_name) = app;
+    let (_, bus_name) = applications.first().unwrap();
 
     // Getting toolkit provider
     let app_proxy = ApplicationProxy::builder(conn)
@@ -284,35 +275,25 @@ async fn main() -> Result<()> {
     let toolkit = app_proxy.toolkit_name().await?;
     let toolkit_version = app_proxy.version().await?;
 
-    // Print these two really really pretty
     println!("{:<70} {:>15}", "Toolkit:", toolkit);
     println!("{:<70} {:>15}", "Toolkit version:", toolkit_version);
     println!();
 
-    let now = std::time::Instant::now();
     let acc_proxy = get_root_accessible(bus_name.clone(), conn).await?;
+    let proxies = acc_proxy.proxies().await?;
+
+    let now = std::time::Instant::now();
     let bus_tree = A11yNode::from_accessible_proxy_iterative(acc_proxy).await?;
     let bus_duration = now.elapsed();
 
-    // Get private bus socket address
-    // busctl call --address='unix:path=/run/user/1000/at-spi/bus\_0' ':1.124' '/org/a11y/atspi/accessible/root' 'org.a11y.atspi.Application' 'GetApplicationBusAddress'
-    let msg: Message = conn
-        .call_method(
-            Some(bus_name.clone()),
-            ACCESSIBLE_ROOT_PATH,
-            Some(APPLICATION_INTERFACE),
-            "GetApplicationBusAddress",
-            &[""],
-        )
-        .await?;
-
-    let socket: String = msg.body().deserialize()?;
-    let socket = socket
+    let app_proxy = proxies.application().await?;
+    let socket = app_proxy.get_application_bus_address().await?;
+    let socket_path = socket
         .strip_prefix("unix:path=")
-        .map(|s| s.to_string())
-        .unwrap_or(socket);
+        .map(std::path::Path::new)
+        .unwrap_or_else(|| std::path::Path::new(&socket));
 
-    let unix_stream = tokio::net::UnixStream::connect(socket.trim())
+    let unix_stream = tokio::net::UnixStream::connect(socket_path)
         .await
         .map_err(|e| format!("Error building UnixStream from socket: {e}"))?;
 
@@ -322,8 +303,9 @@ async fn main() -> Result<()> {
         .await
         .map_err(|e| format!("Error building connection: {e}"))?;
 
-    let now = std::time::Instant::now();
     let acc_proxy = get_root_accessible(bus_name.clone(), &conn2).await?;
+
+    let now = std::time::Instant::now();
     let p2p_tree = A11yNode::from_accessible_proxy_iterative(acc_proxy).await?;
     let p2p_duration = now.elapsed();
 

@@ -191,8 +191,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 [[package]]
 name = "atspi"
 version = "0.27.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e595c4a1ad7be9c5514980ae8c6e4810f17e9d24bd7bbc5ad67e7aef4dc1c819"
+source = "git+https://github.com/odilia-app/atspi.git?branch=p2p#ecbd1769598c22e95d91df854a8e81cbdac4bf90"
 dependencies = [
  "atspi-common",
  "atspi-connection",
@@ -203,8 +202,7 @@ dependencies = [
 [[package]]
 name = "atspi-common"
 version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9d2b4e5cb03df74eae47d7c47918e109db6ad3c825602f236d060a221f4d23b8"
+source = "git+https://github.com/odilia-app/atspi.git?branch=p2p#ecbd1769598c22e95d91df854a8e81cbdac4bf90"
 dependencies = [
  "enumflags2",
  "serde",
@@ -219,8 +217,7 @@ dependencies = [
 [[package]]
 name = "atspi-connection"
 version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "832ecc699b7b1e801e49f5dccb4db1472519537498448f944e8cdcfcdd92e6b3"
+source = "git+https://github.com/odilia-app/atspi.git?branch=p2p#ecbd1769598c22e95d91df854a8e81cbdac4bf90"
 dependencies = [
  "atspi-common",
  "atspi-proxies",
@@ -231,8 +228,7 @@ dependencies = [
 [[package]]
 name = "atspi-proxies"
 version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85b9aef6811420186bed52af0af10fed051ef554b6206edbaffddcfa2dd90e43"
+source = "git+https://github.com/odilia-app/atspi.git?branch=p2p#ecbd1769598c22e95d91df854a8e81cbdac4bf90"
 dependencies = [
  "atspi-common",
  "serde",
