@@ -275,13 +275,8 @@ async fn main() -> Result<()> {
         .call_method(Some(bus_name.clone()), path, Some(iface), method, &[""])
         .await?;
     let socket: String = socket.body().deserialize()?;
-    let socket = socket.strip_prefix("unix:path=").unwrap_or(&socket);
 
-    let unix_stream = tokio::net::UnixStream::connect(socket.trim())
-        .await
-        .map_err(|e| format!("Error building UnixStream from socket: {e}"))?;
-
-    let conn2: zbus::Connection = zbus::connection::Builder::unix_stream(unix_stream)
+    let conn2: zbus::Connection = zbus::connection::Builder::address(socket.as_str())?
         .p2p()
         .build()
         .await
