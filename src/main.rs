@@ -2,7 +2,10 @@ use argh::FromArgs;
 use atspi::{
     Role,
     connection::set_session_accessibility,
-    proxy::accessible::{AccessibleProxy, ObjectRefExt},
+    proxy::{
+        accessible::{AccessibleProxy, ObjectRefExt},
+        application::ApplicationProxy,
+    },
     zbus::proxy::CacheProperties,
 };
 use futures::executor::block_on;
@@ -11,11 +14,11 @@ use std::vec;
 use zbus::{Connection, Message, names::BusName};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
-type ArgResult<T> = std::result::Result<T, String>;
 
 const REGISTRY_DEST: &str = "org.a11y.atspi.Registry";
-const ACCESSIBLE_ROOT: &str = "/org/a11y/atspi/accessible/root";
+const ACCESSIBLE_ROOT_PATH: &str = "/org/a11y/atspi/accessible/root";
 const ACCESSIBLE_INTERFACE: &str = "org.a11y.atspi.Accessible";
+const APPLICATION_INTERFACE: &str = "org.a11y.atspi.Application";
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 struct A11yNode {
@@ -26,6 +29,7 @@ struct A11yNode {
 impl A11yNode {
     async fn from_accessible_proxy_iterative(ap: AccessibleProxy<'_>) -> Result<A11yNode> {
         let connection = ap.inner().connection().clone();
+
         // Contains the processed `A11yNode`'s.
         let mut nodes: Vec<A11yNode> = Vec::new();
 
@@ -34,7 +38,15 @@ impl A11yNode {
 
         // If the stack has an `AccessibleProxy`, we take the last.
         while let Some(ap) = stack.pop() {
-            let child_objects = ap.get_children().await?;
+            let Ok(child_objects) = ap.get_children().await else {
+                eprintln!(
+                    "warn: {} on {} could not get children",
+                    ap.inner().path(),
+                    ap.inner().destination()
+                );
+                continue;
+            };
+
             let mut children_proxies = try_join_all(
                 child_objects
                     .into_iter()
@@ -93,7 +105,7 @@ impl A11yNode {
 async fn get_registry_accessible<'a>(conn: &Connection) -> Result<AccessibleProxy<'a>> {
     let registry = AccessibleProxy::builder(conn)
         .destination(REGISTRY_DEST)?
-        .path(ACCESSIBLE_ROOT)?
+        .path(ACCESSIBLE_ROOT_PATH)?
         .interface(ACCESSIBLE_INTERFACE)?
         .cache_properties(CacheProperties::No)
         .build()
@@ -108,7 +120,7 @@ async fn get_root_accessible<'c>(
 ) -> Result<AccessibleProxy<'c>> {
     let root_accessible = AccessibleProxy::builder(conn)
         .destination(bus_name)?
-        .path(ACCESSIBLE_ROOT)?
+        .path(ACCESSIBLE_ROOT_PATH)?
         .interface(ACCESSIBLE_INTERFACE)?
         .cache_properties(CacheProperties::No)
         .build()
@@ -127,12 +139,12 @@ struct AccessibleBusName {
 }
 
 /// Parse the bus name from the command line argument
-fn parse_bus_name(name: String, conn: &Connection) -> ArgResult<Vec<(String, BusName<'static>)>> {
+fn parse_bus_name(name: String, conn: &Connection) -> Result<Vec<(String, BusName<'static>)>> {
     // If the name is empty, use the default bus name
     if name.is_empty() {
         let bus_name = match BusName::try_from(REGISTRY_DEST) {
             Ok(name) => name.to_owned(),
-            Err(e) => return Err(format!("Invalid bus name: {REGISTRY_DEST} ({e})")),
+            Err(e) => return Err(format!("Invalid bus name: {REGISTRY_DEST} ({e})").into()),
         };
 
         return Ok(vec![(REGISTRY_DEST.to_string(), bus_name)]);
@@ -147,7 +159,7 @@ fn parse_bus_name(name: String, conn: &Connection) -> ArgResult<Vec<(String, Bus
     }
 }
 
-fn get_user_yn_response(question: &str) -> ArgResult<bool> {
+fn get_user_yn_response(question: &str) -> Result<bool> {
     println!("{question} (Y/n)");
     let mut answer = String::new();
     std::io::stdin()
@@ -159,7 +171,7 @@ fn get_user_yn_response(question: &str) -> ArgResult<bool> {
     } else if answer == "n" || answer == "no" {
         Ok(false)
     } else {
-        Err(format!("Invalid answer: {answer}"))
+        Err(format!("Invalid response: {answer}").into())
     }
 }
 
@@ -167,7 +179,7 @@ fn get_user_yn_response(question: &str) -> ArgResult<bool> {
 fn from_app_name(
     sought_after: String,
     conn: &Connection,
-) -> ArgResult<Vec<(String, BusName<'static>)>> {
+) -> Result<Vec<(String, BusName<'static>)>> {
     let registry_accessible = block_on(get_registry_accessible(conn)).map_err(|e| e.to_string())?;
     let mut apps = block_on(registry_accessible.get_children()).map_err(|e| e.to_string())?;
     // get apps in reverse order - most recently entered apps first
@@ -235,7 +247,7 @@ fn from_app_name(
     }
 
     if matching_apps.is_empty() {
-        return Err(format!("No application found with name: {sought_after}"));
+        return Err(format!("No application found with name: {sought_after}").into());
     }
     Ok(matching_apps)
 }
@@ -261,6 +273,22 @@ async fn main() -> Result<()> {
 
     let (_name, bus_name) = app;
 
+    // Getting toolkit provider
+    let app_proxy = ApplicationProxy::builder(conn)
+        .destination(bus_name.clone())?
+        .path(ACCESSIBLE_ROOT_PATH)?
+        .cache_properties(CacheProperties::No)
+        .build()
+        .await?;
+
+    let toolkit = app_proxy.toolkit_name().await?;
+    let toolkit_version = app_proxy.version().await?;
+
+    // Print these two really really pretty
+    println!("{:<70} {:>15}", "Toolkit:", toolkit);
+    println!("{:<70} {:>15}", "Toolkit version:", toolkit_version);
+    println!();
+
     let now = std::time::Instant::now();
     let acc_proxy = get_root_accessible(bus_name.clone(), conn).await?;
     let bus_tree = A11yNode::from_accessible_proxy_iterative(acc_proxy).await?;
@@ -268,12 +296,16 @@ async fn main() -> Result<()> {
 
     // Get private bus socket address
     // busctl call --address='unix:path=/run/user/1000/at-spi/bus\_0' ':1.124' '/org/a11y/atspi/accessible/root' 'org.a11y.atspi.Application' 'GetApplicationBusAddress'
-    let path = "/org/a11y/atspi/accessible/root";
-    let method = "GetApplicationBusAddress";
-    let iface = "org.a11y.atspi.Application";
-    let socket: Message = conn
-        .call_method(Some(bus_name.clone()), path, Some(iface), method, &[""])
+    let msg: Message = conn
+        .call_method(
+            Some(bus_name.clone()),
+            ACCESSIBLE_ROOT_PATH,
+            Some(APPLICATION_INTERFACE),
+            "GetApplicationBusAddress",
+            &[""],
+        )
         .await?;
+
     let socket: String = socket.body().deserialize()?;
 
     let conn2: zbus::Connection = zbus::connection::Builder::address(socket.as_str())?
@@ -288,20 +320,34 @@ async fn main() -> Result<()> {
     let p2p_duration = now.elapsed();
 
     println!("The tree counts should be the same.");
+    let bus_tree_node_count = bus_tree.node_count();
+    let p2p_tree_node_count = p2p_tree.node_count();
     println!(
         "{:<70} {:>15.2?}",
-        "Bus tree node count:",
-        bus_tree.node_count()
+        "Bus tree node count:", bus_tree_node_count
     );
     println!(
         "{:<70} {:>15.2?}",
-        "P2P tree node count:",
-        p2p_tree.node_count()
+        "P2P tree node count:", p2p_tree_node_count
     );
     println!();
 
     println!("{:<70} {:>15.2?}", "Bus connection time:", bus_duration);
+    // Average time per node in the bus tree
+    println!(
+        "{:<70} {:>15.2?}",
+        "Avg per node (Bus):",
+        per_node(bus_duration, bus_tree_node_count)
+    );
+    println!();
     println!("{:<70} {:>15.2?}", "P2P connection time:", p2p_duration);
+    // Average time per node in the P2P tree
+    println!(
+        "{:<70} {:>15.2?}",
+        "Avg per node (P2P):",
+        per_node(p2p_duration, p2p_tree_node_count)
+    );
+    println!();
     println!(
         "{:<70} {:>15.2?}",
         "P2P speedup:",
@@ -309,4 +355,10 @@ async fn main() -> Result<()> {
     );
 
     Ok(())
+}
+
+fn per_node(dur: std::time::Duration, count: u32) -> std::time::Duration {
+    let mut dur = dur.as_nanos();
+    dur /= count as u128;
+    std::time::Duration::from_nanos(dur as u64)
 }
