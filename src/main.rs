@@ -8,28 +8,27 @@ use atspi::{
     },
     zbus::proxy::CacheProperties,
 };
-use futures::executor::block_on;
 use futures::future::try_join_all;
+use futures::{executor::block_on, future::join_all};
 use std::vec;
 use zbus::{Connection, Message, names::BusName};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-const REGISTRY_DEST: &str = "org.a11y.atspi.Registry";
+const REGISTRY_WELL_KNOWN_NAME: &str = "org.a11y.atspi.Registry";
 const ACCESSIBLE_ROOT_PATH: &str = "/org/a11y/atspi/accessible/root";
 const ACCESSIBLE_INTERFACE: &str = "org.a11y.atspi.Accessible";
 const APPLICATION_INTERFACE: &str = "org.a11y.atspi.Application";
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 struct A11yNode {
-    role: Role,
+    role: Option<Role>,
     children: Vec<A11yNode>,
 }
 
 impl A11yNode {
-    async fn from_accessible_proxy_iterative(ap: AccessibleProxy<'_>) -> Result<A11yNode> {
+    async fn from_accessible_proxy(ap: AccessibleProxy<'_>) -> Result<A11yNode> {
         let connection = ap.inner().connection().clone();
-
         // Contains the processed `A11yNode`'s.
         let mut nodes: Vec<A11yNode> = Vec::new();
 
@@ -38,15 +37,38 @@ impl A11yNode {
 
         // If the stack has an `AccessibleProxy`, we take the last.
         while let Some(ap) = stack.pop() {
-            let Ok(child_objects) = ap.get_children().await else {
-                eprintln!(
-                    "warn: {} on {} could not get children",
-                    ap.inner().path(),
-                    ap.inner().destination()
-                );
-                continue;
+            let destination = ap.inner().destination();
+            let mut node_name = format!("node: Unknown node on {destination}");
+            if let Ok(name) = ap.name().await {
+                node_name = format!("node: {name} on {destination}");
+            }
+
+            let child_objects = ap.get_children().await;
+            let child_objects = match child_objects {
+                // Ok can also be an empty vector, which is fine.
+                Ok(children) => children,
+                Err(e) => {
+                    eprintln!(
+                        "Error getting children of {node_name}: {e} -- continuing with next node."
+                    );
+                    continue;
+                }
             };
 
+            if child_objects.is_empty() {
+                // If there are no children, we can get the role and continue.
+                let role = ap.get_role().await.ok();
+
+                // Create a node with the role and no children.
+                nodes.push(A11yNode {
+                    role,
+                    children: Vec::new(),
+                });
+                continue;
+            }
+
+            // Very likely to succeed because the error can only happen if the property cache is enabled,
+            // which we disable in `into_accessible_proxy`.
             let mut children_proxies = try_join_all(
                 child_objects
                     .into_iter()
@@ -54,18 +76,19 @@ impl A11yNode {
             )
             .await?;
 
-            let roles = try_join_all(children_proxies.iter().map(|child| child.get_role())).await?;
+            let roles = join_all(children_proxies.iter().map(|child| child.get_role())).await;
             stack.append(&mut children_proxies);
-
+            // Now we have the role results of the child nodes, we can create `A11yNode`s for them.
             let children = roles
                 .into_iter()
                 .map(|role| A11yNode {
-                    role,
+                    role: role.ok(),
                     children: Vec::new(),
                 })
                 .collect::<Vec<_>>();
 
-            let role = ap.get_role().await?;
+            // Finaly get this node's role and create an `A11yNode` with it.
+            let role = ap.get_role().await.ok();
             nodes.push(A11yNode { role, children });
         }
 
@@ -104,8 +127,7 @@ impl A11yNode {
 
 async fn get_registry_accessible<'a>(conn: &Connection) -> Result<AccessibleProxy<'a>> {
     let registry = AccessibleProxy::builder(conn)
-        .destination(REGISTRY_DEST)?
-        .path(ACCESSIBLE_ROOT_PATH)?
+        .destination(REGISTRY_WELL_KNOWN_NAME)?
         .interface(ACCESSIBLE_INTERFACE)?
         .cache_properties(CacheProperties::No)
         .build()
@@ -121,7 +143,6 @@ async fn get_root_accessible<'c>(
     let root_accessible = AccessibleProxy::builder(conn)
         .destination(bus_name)?
         .path(ACCESSIBLE_ROOT_PATH)?
-        .interface(ACCESSIBLE_INTERFACE)?
         .cache_properties(CacheProperties::No)
         .build()
         .await?;
@@ -142,12 +163,14 @@ struct AccessibleBusName {
 fn parse_bus_name(name: String, conn: &Connection) -> Result<Vec<(String, BusName<'static>)>> {
     // If the name is empty, use the default bus name
     if name.is_empty() {
-        let bus_name = match BusName::try_from(REGISTRY_DEST) {
+        let bus_name = match BusName::try_from(REGISTRY_WELL_KNOWN_NAME) {
             Ok(name) => name.to_owned(),
-            Err(e) => return Err(format!("Invalid bus name: {REGISTRY_DEST} ({e})").into()),
+            Err(e) => {
+                return Err(format!("Invalid bus name: {REGISTRY_WELL_KNOWN_NAME} ({e})").into());
+            }
         };
 
-        return Ok(vec![(REGISTRY_DEST.to_string(), bus_name)]);
+        return Ok(vec![(REGISTRY_WELL_KNOWN_NAME.to_string(), bus_name)]);
     }
 
     match BusName::try_from(name.clone()) {
@@ -291,7 +314,7 @@ async fn main() -> Result<()> {
 
     let now = std::time::Instant::now();
     let acc_proxy = get_root_accessible(bus_name.clone(), conn).await?;
-    let bus_tree = A11yNode::from_accessible_proxy_iterative(acc_proxy).await?;
+    let bus_tree = A11yNode::from_accessible_proxy(acc_proxy).await?;
     let bus_duration = now.elapsed();
 
     // Get private bus socket address
@@ -306,17 +329,16 @@ async fn main() -> Result<()> {
         )
         .await?;
 
-    let socket: String = socket.body().deserialize()?;
+    let socket: String = msg.body().deserialize()?;
 
     let conn2: zbus::Connection = zbus::connection::Builder::address(socket.as_str())?
         .p2p()
         .build()
-        .await
-        .map_err(|e| format!("Error building connection: {e}"))?;
+        .await?;
 
     let now = std::time::Instant::now();
     let acc_proxy = get_root_accessible(bus_name.clone(), &conn2).await?;
-    let p2p_tree = A11yNode::from_accessible_proxy_iterative(acc_proxy).await?;
+    let p2p_tree = A11yNode::from_accessible_proxy(acc_proxy).await?;
     let p2p_duration = now.elapsed();
 
     println!("The tree counts should be the same.");
