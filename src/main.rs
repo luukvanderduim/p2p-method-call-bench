@@ -28,6 +28,7 @@ struct A11yNode {
 
 impl A11yNode {
     async fn from_accessible_proxy(ap: AccessibleProxy<'_>) -> Result<A11yNode> {
+        println!("Building A11yNode tree for {}", ap.inner().destination());
         let connection = ap.inner().connection().clone();
         // Contains the processed `A11yNode`'s.
         let mut nodes: Vec<A11yNode> = Vec::new();
@@ -112,9 +113,7 @@ impl A11yNode {
 
     fn node_count(&self) -> u32 {
         let mut count = 0;
-        let mut stack = Vec::new();
-
-        stack.push(self.clone());
+        let mut stack = vec![self.clone()];
 
         while let Some(node) = stack.pop() {
             count += 1;
@@ -128,6 +127,7 @@ impl A11yNode {
 async fn get_registry_accessible<'a>(conn: &Connection) -> Result<AccessibleProxy<'a>> {
     let registry = AccessibleProxy::builder(conn)
         .destination(REGISTRY_WELL_KNOWN_NAME)?
+        .path(ACCESSIBLE_ROOT_PATH)?
         .interface(ACCESSIBLE_INTERFACE)?
         .cache_properties(CacheProperties::No)
         .build()
