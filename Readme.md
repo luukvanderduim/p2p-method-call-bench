@@ -5,35 +5,43 @@ Small program to walk all nodes of a given application's tree and get each node'
 This is performed first over the public accessibility bus connection and thereafter over the application's P2P connection.
 Timings are printed for each.
 
-## invocation
+This branch defaults to xfce4-panel because, we succeed in building a tree through the normal bus,
+but fail through P2P. Inspection shows object "/org/a11y/atspi/accessible/1" has one child which is itself.
+
+This is a bug.
+Parents must not be their own children and vice-versa.
+This prevents anyone from walking an accessibility tree or caching it up-front.
+
+## How to obtain this branch
 
 ```shell
-cargo run --release -- firefox
+git clone --single-branch --branch xfce4-panel https://github.com/luukvanderduim/p2p-method-call-bench.git
 ```
 
-## Results
+## Build
 
-```console
-luuk@ ~/c/bench-p2p-method-call (main)> cargo rr -- gedit
-    Finished `release` profile [optimized] target(s) in 0.03s
-     Running `target/release/bench-p2p-method-call gedit`
-Toolkit:                                                                           gtk
-Toolkit version:                                                               3.24.49
-
-The tree counts should be the same.
-Bus tree node count:                                                               500
-P2P tree node count:                                                               500
-
-Bus connection time:                                                          109.62ms
-Avg per node (Bus):                                                           219.23µs
-
-P2P connection time:                                                           42.54ms
-Avg per node (P2P):                                                            85.08µs
-
-P2P speedup:                                                                      2.58
+```shell
+cd p2p-method-call-bench
+cargo build 
 ```
 
-## Conclusion
+## invocation
 
-P2P is faster.
-One can observe between 1.6 - 2.0x speedups performing method calls.
+This branch will default to xfce4-panel, so it requires no arguments.
+
+```shell
+cargo run
+```
+
+But you can try other applications.
+Note that due to debugging, this branch is very verbose.
+
+```shell
+cargo run -- gedit
+```
+
+or for the uptimized build
+
+```shell
+cargo run --release -- <executable-name>
+```
