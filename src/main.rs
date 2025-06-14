@@ -10,8 +10,14 @@ use atspi::{
 };
 use futures::future::try_join_all;
 use futures::{executor::block_on, future::join_all};
-use std::vec;
-use zbus::{Connection, Message, names::BusName};
+use std::{
+    collections::{HashMap, HashSet},
+    vec,
+};
+use zbus::{
+    Connection,
+    names::{BusName, OwnedBusName},
+};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -28,7 +34,10 @@ struct A11yNode {
 
 impl A11yNode {
     async fn from_accessible_proxy(ap: AccessibleProxy<'_>) -> Result<A11yNode> {
-        println!("Building A11yNode tree for {}", ap.inner().destination());
+        println!(
+            "Building A11yNode tree for {} - Bus",
+            ap.inner().destination()
+        );
         let connection = ap.inner().connection().clone();
         // Contains the processed `A11yNode`'s.
         let mut nodes: Vec<A11yNode> = Vec::new();
@@ -36,17 +45,38 @@ impl A11yNode {
         // Contains the `AccessibleProxy` yet to be processed.
         let mut stack: Vec<AccessibleProxy> = vec![ap];
 
+        let mut unique_objects: HashSet<(String, String)> = HashSet::new();
+
         // If the stack has an `AccessibleProxy`, we take the last.
         while let Some(ap) = stack.pop() {
-            let destination = ap.inner().destination();
-            let mut node_name = format!("node: Unknown node on {destination}");
-            if let Ok(name) = ap.name().await {
-                node_name = format!("node: {name} on {destination}");
+            let bus_name = ap.inner().destination();
+            let name = ap.name().await;
+
+            let node_name = {
+                match name {
+                    Ok(name) => format!("node: {name} on {bus_name}"),
+                    Err(e) => {
+                        eprintln!(
+                            "Error getting name for {}: {e} -- continuing with next node.",
+                            ap.inner().path()
+                        );
+                        format!("node: \"Unknown name\" on {bus_name}")
+                    }
+                }
+            };
+
+            let object_path = ap.inner().path();
+
+            if !unique_objects.insert((bus_name.as_str().into(), object_path.as_str().into())) {
+                println!("Object ({bus_name}, {object_path}) is not unique for this tree.");
+                return Err(
+                    "Objects must be unique when visiting the each node in the tree.".into(),
+                );
             }
 
             let child_objects = ap.get_children().await;
+
             let child_objects = match child_objects {
-                // Ok can also be an empty vector, which is fine.
                 Ok(children) => children,
                 Err(e) => {
                     eprintln!(
@@ -55,6 +85,12 @@ impl A11yNode {
                     continue;
                 }
             };
+
+            let child_count = child_objects.len();
+            if child_count > 65536 {
+                eprintln!("Error: Child count on {node_name} exceeds 65536, (has {child_count}).");
+                return Err("Child count exceeds limit".into());
+            }
 
             if child_objects.is_empty() {
                 // If there are no children, we can get the role and continue.
@@ -68,13 +104,128 @@ impl A11yNode {
                 continue;
             }
 
-            // Very likely to succeed because the error can only happen if the property cache is enabled,
-            // which we disable in `into_accessible_proxy`.
             let mut children_proxies = try_join_all(
                 child_objects
                     .into_iter()
                     .map(|child| child.into_accessible_proxy(&connection)),
             )
+            .await?;
+
+            let roles = join_all(children_proxies.iter().map(|child| child.get_role())).await;
+            stack.append(&mut children_proxies);
+            // Now we have the role results of the child nodes, we can create `A11yNode`s for them.
+            let children = roles
+                .into_iter()
+                .map(|role| A11yNode {
+                    role: role.ok(),
+                    children: Vec::new(),
+                })
+                .collect::<Vec<_>>();
+
+            // Finaly get this node's role and create an `A11yNode` with it.
+            let role = ap.get_role().await.ok();
+            nodes.push(A11yNode { role, children });
+        }
+
+        let mut fold_stack: Vec<A11yNode> = Vec::with_capacity(nodes.len());
+
+        while let Some(mut node) = nodes.pop() {
+            if node.children.is_empty() {
+                fold_stack.push(node);
+                continue;
+            }
+
+            // If the node has children, we fold in the children from 'fold_stack'.
+            // There may be more on 'fold_stack' than the node requires.
+            let begin = fold_stack.len().saturating_sub(node.children.len());
+            node.children = fold_stack.split_off(begin);
+            fold_stack.push(node);
+        }
+
+        fold_stack.pop().ok_or("No root node built".into())
+    }
+
+    async fn from_accessible_proxy_p2p(
+        ap: AccessibleProxy<'_>,
+        p2p_peers: &HashMap<OwnedBusName, zbus::Connection>,
+        bus_conn: &zbus::Connection,
+    ) -> Result<A11yNode> {
+        println!(
+            "Building A11yNode tree for {} - P2P",
+            ap.inner().destination()
+        );
+
+        // Contains the processed `A11yNode`'s.
+        let mut nodes: Vec<A11yNode> = Vec::new();
+
+        // Contains the `AccessibleProxy` yet to be processed.
+        let mut stack: Vec<AccessibleProxy> = vec![ap];
+
+        let mut unique_objects: HashSet<(String, String)> = HashSet::new();
+
+        // If the stack has an `AccessibleProxy`, we take the last.
+        while let Some(ap) = stack.pop() {
+            let name = ap.name().await;
+            let bus_name = ap.inner().destination();
+
+            let node_name = {
+                match name {
+                    Ok(name) => format!("node: {name} on {bus_name}"),
+                    Err(e) => {
+                        eprintln!(
+                            "Error getting name for {}: {e} -- continuing with next node.",
+                            ap.inner().path()
+                        );
+                        format!("node: \"Unknown name\" on {bus_name}")
+                    }
+                }
+            };
+
+            let object_path = ap.inner().path();
+
+            if !unique_objects.insert((bus_name.as_str().into(), object_path.as_str().into())) {
+                println!("Object ({bus_name}, {object_path}) is not unique for this tree.");
+                return Err(
+                    "Objects must be unique when visiting the each node in the tree.".into(),
+                );
+            }
+
+            let child_objects = ap.get_children().await;
+
+            let child_objects = match child_objects {
+                // Ok can also be an empty vector, which is fine.
+                Ok(children) => children,
+                Err(e) => {
+                    eprintln!(
+                        "Error getting children of {node_name}: {e} -- continuing with next node."
+                    );
+                    continue;
+                }
+            };
+
+            let child_count = child_objects.len();
+            if child_count > 65536 {
+                eprintln!("Error: Child count on {node_name} exceeds 65536, (has {child_count}).");
+                return Err("Child count exceeds limit".into());
+            }
+
+            if child_objects.is_empty() {
+                let role = ap.get_role().await.ok();
+                nodes.push(A11yNode {
+                    role,
+                    children: Vec::new(),
+                });
+                continue;
+            }
+
+            let mut children_proxies = try_join_all(child_objects.into_iter().map(|child| {
+                let child_name: OwnedBusName = BusName::from(child.name.clone()).into();
+                if let Some(p2p_conn) = p2p_peers.get(&child_name) {
+                    child.into_accessible_proxy(p2p_conn)
+                } else {
+                    child.into_accessible_proxy(bus_conn)
+                }
+            }))
             .await?;
 
             let roles = join_all(children_proxies.iter().map(|child| child.get_role())).await;
@@ -154,7 +305,7 @@ async fn get_root_accessible<'c>(
 #[derive(FromArgs)]
 struct AccessibleBusName {
     /// the bus name or application name to be used
-    /// (default: org.a11y.atspi.Registry)
+    /// (default: xfce4-panel)
     #[argh(positional, default = "String::new()")]
     bus_name: String,
 }
@@ -307,11 +458,11 @@ async fn main() -> Result<()> {
     let toolkit = app_proxy.toolkit_name().await?;
     let toolkit_version = app_proxy.version().await?;
 
-    // Print these two really really pretty
     println!("{:<70} {:>15}", "Toolkit:", toolkit);
     println!("{:<70} {:>15}", "Toolkit version:", toolkit_version);
     println!();
 
+    // Building the tree from the bus connection
     let now = std::time::Instant::now();
     let acc_proxy = get_root_accessible(bus_name.clone(), conn).await?;
     let bus_tree = A11yNode::from_accessible_proxy(acc_proxy).await?;
@@ -319,26 +470,33 @@ async fn main() -> Result<()> {
 
     // Get private bus socket address
     // busctl call --address='unix:path=/run/user/1000/at-spi/bus\_0' ':1.124' '/org/a11y/atspi/accessible/root' 'org.a11y.atspi.Application' 'GetApplicationBusAddress'
-    let msg: Message = conn
-        .call_method(
-            Some(bus_name.clone()),
-            ACCESSIBLE_ROOT_PATH,
-            Some(APPLICATION_INTERFACE),
-            "GetApplicationBusAddress",
-            &[""],
-        )
-        .await?;
+    let p2p_conn = get_p2p_connection(bus_name.clone(), conn)
+        .await
+        .unwrap_or(conn.clone());
 
-    let socket: String = msg.body().deserialize()?;
+    // Get all P2P peers as hashMap of bus name and connection
 
-    let conn2: zbus::Connection = zbus::connection::Builder::address(socket.as_str())?
-        .p2p()
-        .build()
-        .await?;
+    // Get list of children on the registry
+    let registry_accessible = get_registry_accessible(conn).await?;
+    let children = registry_accessible.get_children().await?;
+    let mut p2p_peers: HashMap<OwnedBusName, zbus::Connection> = HashMap::new();
+    for child in children {
+        let bus_name = child.name.to_owned();
+        match get_p2p_connection(bus_name.clone().into(), conn).await {
+            Ok(conn) => {
+                p2p_peers.insert(BusName::from(bus_name).into(), conn);
+            }
+            Err(e) => {
+                eprintln!("info: {bus_name} does not support P2P: {e}");
+                continue;
+            }
+        };
+    }
 
+    // Building the tree from the P2P connection
     let now = std::time::Instant::now();
-    let acc_proxy = get_root_accessible(bus_name.clone(), &conn2).await?;
-    let p2p_tree = A11yNode::from_accessible_proxy(acc_proxy).await?;
+    let acc_proxy = get_root_accessible(bus_name.clone(), &p2p_conn).await?;
+    let p2p_tree = A11yNode::from_accessible_proxy_p2p(acc_proxy, &p2p_peers, conn).await?;
     let p2p_duration = now.elapsed();
 
     println!("The tree counts should be the same.");
@@ -383,4 +541,35 @@ fn per_node(dur: std::time::Duration, count: u32) -> std::time::Duration {
     let mut dur = dur.as_nanos();
     dur /= count as u128;
     std::time::Duration::from_nanos(dur as u64)
+}
+
+async fn get_p2p_connection(
+    bus_name: BusName<'_>,
+    bus_conn: &zbus::Connection,
+) -> Result<zbus::Connection> {
+    let msg = bus_conn
+        .call_method(
+            Some(bus_name.clone()),
+            ACCESSIBLE_ROOT_PATH,
+            Some(APPLICATION_INTERFACE),
+            "GetApplicationBusAddress",
+            &[""],
+        )
+        .await;
+
+    let msg = match msg {
+        Ok(msg) => msg,
+        Err(e) => {
+            return Err(format!("Error getting P2P connection for {bus_name}: {e}").into());
+        }
+    };
+
+    let socket: String = msg.body().deserialize()?;
+
+    let p2p_conn: zbus::Connection = zbus::connection::Builder::address(socket.as_str())?
+        .p2p()
+        .build()
+        .await?;
+
+    Ok(p2p_conn)
 }
