@@ -36,15 +36,48 @@ impl A11yNode {
         // Contains the `AccessibleProxy` yet to be processed.
         let mut stack: Vec<AccessibleProxy> = vec![ap];
 
+        let mut a11yproxy_counter = 0;
+
+        let mut previous_path = String::with_capacity(1024);
         // If the stack has an `AccessibleProxy`, we take the last.
         while let Some(ap) = stack.pop() {
-            let destination = ap.inner().destination();
-            let mut node_name = format!("node: Unknown node on {destination}");
-            if let Ok(name) = ap.name().await {
-                node_name = format!("node: {name} on {destination}");
+            a11yproxy_counter += 1;
+            println!("A11yproxy ({a11yproxy_counter}) for {}", ap.inner().path());
+
+            let bus_name = ap.inner().destination();
+            // println!("Getting ap.name().await");
+            let name = ap.name().await;
+            // println!("Received ap.name().await result");
+
+            let node_name = {
+                match name {
+                    Ok(name) => format!("node: {name} on {bus_name}"),
+                    Err(e) => {
+                        eprintln!(
+                            "Error getting name for {}: {e} -- continuing with next node.",
+                            ap.inner().path()
+                        );
+                        format!("node: \"Unknown name\" on {bus_name}")
+                    }
+                }
+            };
+
+            if previous_path == ap.inner().path().as_str() {
+                println!(
+                    "Previous path is the same:\n Current path: {} is sibling or child of {previous_path}\n  These cannot be the same.",
+                    ap.inner().path()
+                );
+                // number of children of this accessible proxy:
+                let child_count = ap.get_children().await.map_err(|e| e.to_string())?.len();
+                println!("{node_name} has {child_count} children.");
+
+                return Err("Cycle detected".into());
             }
 
+            // println!("GetChildren");
             let child_objects = ap.get_children().await;
+            //println!("Received GetChildren result");
+
             let child_objects = match child_objects {
                 // Ok can also be an empty vector, which is fine.
                 Ok(children) => children,
@@ -55,6 +88,12 @@ impl A11yNode {
                     continue;
                 }
             };
+
+            let child_count = child_objects.len();
+            if child_count > 65536 {
+                eprintln!("Error: Child count on {node_name} exceeds 65536, (has {child_count}).");
+                return Err("Child count exceeds limit".into());
+            }
 
             if child_objects.is_empty() {
                 // If there are no children, we can get the role and continue.
@@ -68,8 +107,6 @@ impl A11yNode {
                 continue;
             }
 
-            // Very likely to succeed because the error can only happen if the property cache is enabled,
-            // which we disable in `into_accessible_proxy`.
             let mut children_proxies = try_join_all(
                 child_objects
                     .into_iter()
@@ -91,6 +128,8 @@ impl A11yNode {
             // Finaly get this node's role and create an `A11yNode` with it.
             let role = ap.get_role().await.ok();
             nodes.push(A11yNode { role, children });
+            previous_path.clear();
+            previous_path.push_str(ap.inner().path().as_str());
         }
 
         let mut fold_stack: Vec<A11yNode> = Vec::with_capacity(nodes.len());
@@ -154,8 +193,8 @@ async fn get_root_accessible<'c>(
 #[derive(FromArgs)]
 struct AccessibleBusName {
     /// the bus name or application name to be used
-    /// (default: org.a11y.atspi.Registry)
-    #[argh(positional, default = "String::new()")]
+    /// (default: xfce4-panel)
+    #[argh(positional, default = "String::from(\"xfce4-panel\")")]
     bus_name: String,
 }
 
@@ -307,7 +346,6 @@ async fn main() -> Result<()> {
     let toolkit = app_proxy.toolkit_name().await?;
     let toolkit_version = app_proxy.version().await?;
 
-    // Print these two really really pretty
     println!("{:<70} {:>15}", "Toolkit:", toolkit);
     println!("{:<70} {:>15}", "Toolkit version:", toolkit_version);
     println!();
