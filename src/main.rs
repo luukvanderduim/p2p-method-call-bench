@@ -10,7 +10,7 @@ use atspi::{
 };
 use futures::future::try_join_all;
 use futures::{executor::block_on, future::join_all};
-use std::vec;
+use std::{collections::HashSet, vec};
 use zbus::{Connection, Message, names::BusName};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -38,14 +38,15 @@ impl A11yNode {
 
         let mut a11yproxy_counter = 0;
 
-        let mut previous_path = String::with_capacity(1024);
+        let mut unique_objects: HashSet<(String, String)> = HashSet::new();
+
         // If the stack has an `AccessibleProxy`, we take the last.
         while let Some(ap) = stack.pop() {
             a11yproxy_counter += 1;
             println!("A11yproxy ({a11yproxy_counter}) for {}", ap.inner().path());
 
             let bus_name = ap.inner().destination();
-            // println!("Getting ap.name().await");
+
             let name = ap.name().await;
             // println!("Received ap.name().await result");
 
@@ -62,16 +63,13 @@ impl A11yNode {
                 }
             };
 
-            if previous_path == ap.inner().path().as_str() {
-                println!(
-                    "Previous path is the same:\n Current path: {} is sibling or child of {previous_path}\n  These cannot be the same.",
-                    ap.inner().path()
-                );
-                // number of children of this accessible proxy:
-                let child_count = ap.get_children().await.map_err(|e| e.to_string())?.len();
-                println!("{node_name} has {child_count} children.");
+            let object_path = ap.inner().path();
 
-                return Err("Cycle detected".into());
+            if !unique_objects.insert((bus_name.as_str().into(), object_path.as_str().into())) {
+                println!("Object ({bus_name}, {object_path}) is not unique for this tree.");
+                return Err(
+                    "Objects must be unique when visiting the each node in the tree.".into(),
+                );
             }
 
             // println!("GetChildren");
@@ -128,8 +126,6 @@ impl A11yNode {
             // Finaly get this node's role and create an `A11yNode` with it.
             let role = ap.get_role().await.ok();
             nodes.push(A11yNode { role, children });
-            previous_path.clear();
-            previous_path.push_str(ap.inner().path().as_str());
         }
 
         let mut fold_stack: Vec<A11yNode> = Vec::with_capacity(nodes.len());
